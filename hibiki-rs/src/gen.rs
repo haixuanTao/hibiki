@@ -1,6 +1,8 @@
 use anyhow::Result;
 use candle::{Device, IndexOp, Tensor};
 
+use dora_node_api::{dora_core::config::DataId, into_vec, DoraNode, IntoArrow, MetadataParameters};
+
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct Config {
     pub mimi_name: String,
@@ -13,9 +15,7 @@ pub struct Args {
     pub lm_config: moshi::lm::Config,
     pub lm_model_file: std::path::PathBuf,
     pub mimi_model_file: std::path::PathBuf,
-    pub audio_input_file: std::path::PathBuf,
     pub text_tokenizer: std::path::PathBuf,
-    pub audio_output_file: std::path::PathBuf,
     pub seed: u64,
     pub cfg_alpha: Option<f64>,
 }
@@ -49,19 +49,6 @@ pub fn run(args: &Args, dev: &Device) -> Result<()> {
     tracing::info!(?dtype, ?dev);
 
     tracing::info!("loading the audio input");
-    let (in_pcm, in_pcm_len) = {
-        let (mut pcm, sample_rate) = crate::audio_io::pcm_decode(&args.audio_input_file)?;
-        pcm.extend_from_slice(&vec![0.0; 12000]);
-        let pcm = if sample_rate != 24_000 {
-            crate::audio_io::resample(&pcm, sample_rate as usize, 24_000)?
-        } else {
-            pcm
-        };
-        let pcm_len = pcm.len();
-        let pcm = Tensor::from_vec(pcm, (1, 1, pcm_len), dev)?;
-        (pcm, pcm_len)
-    };
-    tracing::info!(in_pcm_len, "loaded the audio input");
 
     tracing::info!("loading the lm");
     let lm_model = moshi::lm::load_lm_model(lm_config.clone(), &args.lm_model_file, dtype, dev)?;
@@ -100,7 +87,7 @@ pub fn run(args: &Args, dev: &Device) -> Result<()> {
             Some(conditions)
         }
     };
-    let max_steps = (in_pcm_len / 1920).min(2500);
+    let max_steps = 2500;
     let cfg_alpha = if args.cfg_alpha == Some(1.) { None } else { args.cfg_alpha };
     let mut state = {
         let config = moshi::lm_generate_multistream::Config {
@@ -113,14 +100,7 @@ pub fn run(args: &Args, dev: &Device) -> Result<()> {
             text_pad_token: 3,
         };
         moshi::lm_generate_multistream::State::new(
-            lm_model,
-            max_steps + 20,
-            audio_lp,
-            text_lp,
-            None,
-            None,
-            cfg_alpha,
-            config,
+            lm_model, 200_000, audio_lp, text_lp, None, None, cfg_alpha, config,
         )
     };
 
@@ -128,12 +108,23 @@ pub fn run(args: &Args, dev: &Device) -> Result<()> {
     let mut prev_text_token = text_start_token;
     let mut out_pcms = vec![];
     let mut text_tokens = vec![];
-    let mut nsteps = 0;
     tracing::info!("starting the inference loop");
-    let start_time = std::time::Instant::now();
-    for start_index in 0..max_steps {
-        nsteps += 1;
-        let in_pcm = in_pcm.i((.., .., start_index * 1920..(start_index + 1) * 1920))?;
+    let (mut node, mut event) = DoraNode::init_from_env().unwrap();
+    while let Some(event) = event.recv() {
+        let data = match event {
+            dora_node_api::Event::Input { id, metadata, data } => data,
+            dora_node_api::Event::Stop(_) => {
+                break;
+            }
+            _ => {
+                tracing::warn!("unexpected event: {event:?}");
+                continue;
+            }
+        };
+        let data: Vec<f32> = into_vec(&data).unwrap();
+        // println!("received input data of length {}", data.len());
+        let len = data.len();
+        let in_pcm = Tensor::from_vec(data, (1, 1, len), dev)?;
         let codes = mimi.encode_step(&in_pcm.into())?;
         if let Some(codes) = codes.as_option() {
             let (_b, _codebooks, steps) = codes.dims3()?;
@@ -148,7 +139,7 @@ pub fn run(args: &Args, dev: &Device) -> Result<()> {
                         text(&text_tokenizer, prev_text_token, text_token, text_start_token)
                     {
                         use std::io::Write;
-                        print!("{text}");
+                        println!("{text}");
                         std::io::stdout().flush().unwrap();
                     }
                 }
@@ -161,24 +152,25 @@ pub fn run(args: &Args, dev: &Device) -> Result<()> {
                     let out_pcm = mimi.decode_step(&audio_tokens.into())?;
                     if let Some(out_pcm) = out_pcm.as_option() {
                         out_pcms.push(out_pcm.clone());
+                        let out_pcm = out_pcm.i((0, 0))?.to_vec1::<f32>()?;
+                        let mut parameters = MetadataParameters::new();
+                        parameters.insert(
+                            "sample_rate".to_string(),
+                            dora_node_api::Parameter::Integer(24000),
+                        );
+                        node.send_output(
+                            DataId::from("audio".to_string()),
+                            parameters,
+                            out_pcm.into_arrow(),
+                        )
+                        .unwrap()
                     }
                 }
             }
         }
     }
-    println!();
-    let dt = start_time.elapsed().as_secs_f32();
-    tracing::info!(
-        "generated {nsteps} steps in {dt:.2}s, {:.0}ms/token",
-        dt * 1000. / (nsteps as f32)
-    );
+
     let str = text_tokenizer.decode_piece_ids(&text_tokens)?;
     tracing::info!(str, "generated text");
-    let out_pcms = Tensor::cat(&out_pcms, 2)?;
-    tracing::info!(shape = ?out_pcms.shape(), "generated audio");
-    let out_pcms = out_pcms.i((0, 0))?.to_vec1::<f32>()?;
-    let mut out_wav = std::fs::File::create(&args.audio_output_file)?;
-    moshi::wav::write_pcm_as_wav(&mut out_wav, &out_pcms, 24_000)?;
-    tracing::info!(audio = ?args.audio_output_file, "generated audio");
     Ok(())
 }

@@ -11,10 +11,11 @@ categories = ["science"]
 
 [dependencies]
 anyhow = "1.0"
-candle = { version = "0.8.2", package = "candle-core" }
+candle = { version = "0.8.4", package = "candle-core" }
 candle-nn = "0.8.2"
 candle-transformers = "0.8.2"
 clap = { version = "4.2.4", features = ["derive"] }
+dora-node-api = { version = "0.3.12", features = [], default-features = false }
 hf-hub = "0.4.1"
 moshi = "0.5.2"
 rubato = "0.15.0"
@@ -28,8 +29,18 @@ tracing-subscriber = "0.3.18"
 
 [features]
 default = []
-cuda = ["moshi/cuda", "candle/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
-metal = ["moshi/metal", "candle/metal", "candle-nn/metal", "candle-transformers/metal"]
+cuda = [
+    "moshi/cuda",
+    "candle/cuda",
+    "candle-nn/cuda",
+    "candle-transformers/cuda",
+]
+metal = [
+    "moshi/metal",
+    "candle/metal",
+    "candle-nn/metal",
+    "candle-transformers/metal",
+]
 
 [profile.release]
 debug = true

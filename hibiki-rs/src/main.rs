@@ -35,14 +35,8 @@ enum Command {
         #[arg(long)]
         text_tokenizer: Option<String>,
 
-        #[arg(long, default_value = "kyutai/hibiki-1b-rs-bf16")]
+        #[arg(long, default_value = "kyutai/hibiki-2b-rs-bf16")]
         hf_repo: String,
-
-        #[arg()]
-        audio_input_file: String,
-
-        #[arg()]
-        audio_output_file: String,
 
         #[arg(long, default_value_t = 299_792_458)]
         seed: u64,
@@ -88,8 +82,6 @@ fn main() -> Result<()> {
             config,
             mimi_model_file,
             hf_repo,
-            audio_input_file,
-            audio_output_file,
             cfg_alpha,
             cpu,
         } => {
@@ -128,8 +120,6 @@ fn main() -> Result<()> {
                 lm_model_file,
                 mimi_model_file,
                 text_tokenizer,
-                audio_input_file: audio_input_file.into(),
-                audio_output_file: audio_output_file.into(),
                 seed,
                 cfg_alpha,
             };

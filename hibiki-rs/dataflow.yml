@@ -1,0 +1,31 @@
+nodes:
+  - id: dora-microphone
+    description: Microphone
+    build: pip install dora-microphone
+    path: dora-microphone
+    inputs:
+      tick: dora/timer/millis/2000
+    outputs:
+      - audio
+    env:
+      SAMPLE_RATE: 24000
+      MAX_DURATION: 0.4
+
+  - id: hibiki
+    build: cargo build  --features metal -r
+    path: target/release/hibiki
+    args: gen
+    inputs:
+      audio:
+        source: dora-microphone/audio
+        queue_size: 1000000
+    outputs:
+      - audio
+
+  - id: dora-pyaudio
+    build: pip install dora-pyaudio
+    path: dora-pyaudio
+    inputs:
+      audio:
+        source: hibiki/audio
+        queue_size: 1000000
